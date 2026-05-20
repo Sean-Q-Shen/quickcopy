@@ -1,0 +1,6 @@
+{
+  "name": "QuickCopy Pro",
+  "description": "极速文本与指令片段管理工具，专为运维与开发设计，支持本地文件零延迟同步",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
