@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+@keyframes flash {
+  0% {
+    background-color: rgb(219 234 254); /* bg-blue-100 */
+    box-shadow: 0 0 0 4px rgb(191 219 254 / 0.5); /* ring-blue-200 / 0.5 */
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: none;
+  }
+}
+
+.animate-flash {
+  animation: flash 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}

@@ -31,7 +31,8 @@ import {
   Archive,
   History,
   ShieldCheck,
-  ShieldAlert
+  ShieldAlert,
+  Pin
 } from 'lucide-react';
 
 // Sophisticated synchronous symmetric encryption algorithm (UTF-8 binary safe)
@@ -91,6 +92,8 @@ interface SnippetItem {
   title: string;
   content: string;
   isPassword?: boolean;
+  copyCount?: number;
+  isPinned?: boolean;
 }
 
 interface Category {
@@ -429,6 +432,77 @@ export default function App() {
     }, 3000);
   };
 
+  // Micro feedback visual flash on both regular grid element and top shortcuts row
+  const flashCard = (snippetId: number) => {
+    const gridEl = document.getElementById(`snippet-card-${snippetId}`);
+    if (gridEl) {
+      gridEl.classList.add('animate-flash');
+      setTimeout(() => gridEl.classList.remove('animate-flash'), 450);
+    }
+    const pinnedEl = document.getElementById(`pinned-card-${snippetId}`);
+    if (pinnedEl) {
+      pinnedEl.classList.add('animate-flash');
+      setTimeout(() => pinnedEl.classList.remove('animate-flash'), 450);
+    }
+  };
+
+  // Increment usage statistics persistent counter
+  const incrementCopyCount = (snippetId: number) => {
+    setCategories((prevCategories) => {
+      const updated = prevCategories.map((cat) => ({
+        ...cat,
+        items: cat.items.map((item) => {
+          if (item.id === snippetId) {
+            return {
+              ...item,
+              copyCount: (item.copyCount || 0) + 1,
+            };
+          }
+          return item;
+        }),
+      }));
+      // Persist as well
+      localStorage.setItem('quick_copy_pro_data', JSON.stringify(updated));
+      if (fileHandle) {
+        // Debounced or direct sync
+        saveData(updated);
+      }
+      return updated;
+    });
+  };
+
+  // Toggle Pinned / Shortcut status manually
+  const handleTogglePin = (snippetId: number) => {
+    setCategories((prevCategories) => {
+      let pinState = false;
+      let titleName = '';
+      const updated = prevCategories.map((cat) => ({
+        ...cat,
+        items: cat.items.map((item) => {
+          if (item.id === snippetId) {
+            pinState = !item.isPinned;
+            titleName = item.title;
+            return {
+              ...item,
+              isPinned: pinState,
+            };
+          }
+          return item;
+        }),
+      }));
+
+      addToast(
+        pinState ? `已常驻顶置: ${titleName}` : `已移出常驻公文包: ${titleName}`,
+        pinState ? '将永久展示在置顶快速通道' : '该卡片已恢复到默认的分组面板内'
+      );
+
+      // Persist as well
+      localStorage.setItem('quick_copy_pro_data', JSON.stringify(updated));
+      saveData(updated);
+      return updated;
+    });
+  };
+
   // Copy trigger
   const handleCopy = (snippet: SnippetItem) => {
     let copyText = snippet.content;
@@ -446,11 +520,8 @@ export default function App() {
               const decrypted = decryptText(snippet.content, key);
               navigator.clipboard.writeText(decrypted).then(() => {
                 addToast(`复制密码密文: ${snippet.title}`, '•••••••••••• (已在剪切板中自动解密为明文)');
-                const el = document.getElementById(`snippet-card-${snippet.id}`);
-                if (el) {
-                  el.classList.add('animate-flash');
-                  setTimeout(() => el.classList.remove('animate-flash'), 400);
-                }
+                incrementCopyCount(snippet.id);
+                flashCard(snippet.id);
               });
             } catch {
               addToast('解密失败', '请输入正确的主密码');
@@ -474,12 +545,8 @@ export default function App() {
           snippet.isPassword ? `已解密复制密码: ${snippet.title}` : `已成功复制: ${snippet.title}`,
           snippet.isPassword ? '•••••••••••• (已在剪切板中解密为明文)' : copyText
         );
-        // Micro feedback visual flash
-        const el = document.getElementById(`snippet-card-${snippet.id}`);
-        if (el) {
-          el.classList.add('animate-flash');
-          setTimeout(() => el.classList.remove('animate-flash'), 400);
-        }
+        incrementCopyCount(snippet.id);
+        flashCard(snippet.id);
       },
       (err) => {
         console.error('Failed to copy command: ', err);
@@ -547,6 +614,20 @@ export default function App() {
       i === idx ? { ...cat, isOpen: !cat.isOpen } : cat
     );
     saveData(updated);
+  };
+
+  // Expand all categories
+  const expandAllCategories = () => {
+    const updated = categories.map((cat) => ({ ...cat, isOpen: true }));
+    saveData(updated);
+    addToast('已展开所有分类', `成功展开了全部 ${categories.length} 个分类项目。`);
+  };
+
+  // Collapse all categories
+  const collapseAllCategories = () => {
+    const updated = categories.map((cat) => ({ ...cat, isOpen: false }));
+    saveData(updated);
+    addToast('已收起所有分类', `成功收起了全部 ${categories.length} 个分类项目。`);
   };
 
   // Add / Edit Snippet Modal triggers
@@ -885,6 +966,26 @@ export default function App() {
 
   const totalFilteredResults = filteredCategories.reduce((sum, cat) => sum + cat.items.length, 0);
 
+  // Compute frequently copied and pinned bookmarks list
+  const shortcutSnippets = categories
+    .flatMap((cat) => cat.items.map((item) => ({ ...item, categoryId: cat.id, categoryName: cat.name })))
+    .filter((item) => item.isPinned || (item.copyCount && item.copyCount > 0))
+    .filter((item) => {
+      if (!searchTerm) return true;
+      return (
+        item.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (!item.isPassword && item.content.toLowerCase().includes(searchTerm.toLowerCase()))
+      );
+    })
+    .sort((a, b) => {
+      // Prioritize manually pinned items
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      // Then sort by copyCount descending
+      return (b.copyCount || 0) - (a.copyCount || 0);
+    })
+    .slice(0, 12); // Display up to 12 quick shortcuts (fits nicely in responsive grids)
+
   // Auto scroll highlight function
   const highlightMatch = (text: string, highlight: string) => {
     if (!highlight.trim()) return <span>{text}</span>;
@@ -1147,6 +1248,29 @@ export default function App() {
               </span>
             )}
 
+            {/* Expand / Collapse All Category Controls */}
+            <div className="flex gap-1 items-center bg-slate-100 p-1 rounded border border-slate-200">
+              <button
+                id="btn-expand-all"
+                onClick={expandAllCategories}
+                className="text-slate-650 hover:text-blue-600 hover:bg-white text-xs px-2.5 py-1 rounded transition-colors flex items-center gap-1 active:scale-95 font-medium"
+                title="一键展开所有分类"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+                <span>全部展开</span>
+              </button>
+              <span className="w-[1px] h-3 bg-slate-300"></span>
+              <button
+                id="btn-collapse-all"
+                onClick={collapseAllCategories}
+                className="text-slate-650 hover:text-blue-600 hover:bg-white text-xs px-2.5 py-1 rounded transition-colors flex items-center gap-1 active:scale-95 font-medium"
+                title="一键收起所有分类"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+                <span>全部收起</span>
+              </button>
+            </div>
+
             <button
               id="btn-add-cat-desktop"
               onClick={openAddCategoryModal}
@@ -1158,8 +1282,93 @@ export default function App() {
           </div>
         </section>
 
+        {/* Pinned & Frequently Used Shortcuts Dashboard */}
+        {shortcutSnippets.length > 0 && (
+          <section id="pinned-shortcuts-section" className="bg-slate-100/90 border border-slate-200/90 p-4 rounded-xl flex flex-col gap-3 shadow-xs animate-fade-in relative z-10">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-amber-500 shrink-0 animate-pulse" />
+                <h3 className="font-bold text-slate-800 text-xs sm:text-sm tracking-tight flex items-center gap-1.5">
+                  置顶与高频指令 / Pinned & Shortcuts Board
+                </h3>
+                <span className="text-[10px] text-blue-600 font-medium bg-blue-50 border border-blue-100 rounded px-1.5 py-0.2 font-mono">
+                  {shortcutSnippets.length} ACTIVE
+                </span>
+              </div>
+
+              {/* Reset stats helper */}
+              <button
+                onClick={() => {
+                  if (confirm('确定要清除所有指令的复制次数统计和手动置顶吗？操作后常驻栏将被重置。')) {
+                    const resetData = categories.map(cat => ({
+                      ...cat,
+                      items: cat.items.map(item => ({
+                        ...item,
+                        copyCount: 0,
+                        isPinned: false
+                      }))
+                    }));
+                    saveData(resetData);
+                    addToast('🔥 已重置使用统计与置顶', '所有的卡片热度值已归零。');
+                  }
+                }}
+                className="text-[10px] hover:text-rose-600 text-slate-400 font-mono transition-colors flex items-center gap-1 cursor-pointer"
+                title="重置所有卡片的复制计数并取消所有置顶"
+              >
+                <RefreshCw className="h-2.5 w-2.5" />
+                重置热度 Restats
+              </button>
+            </div>
+
+            {/* Micro grid columns: compact cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+              {shortcutSnippets.map((snippet) => (
+                <div
+                  key={`shortcut-${snippet.id}`}
+                  id={`pinned-card-${snippet.id}`}
+                  onClick={() => handleCopy(snippet)}
+                  className="group/shortcut bg-white border border-slate-200/90 hover:border-blue-400 hover:shadow-sm p-3 rounded-lg shadow-2xs transition-all duration-150 cursor-pointer flex flex-col justify-between min-h-[92px]"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider truncate block" title={snippet.categoryName}>
+                        {snippet.categoryName}
+                      </span>
+                      {snippet.isPinned && (
+                        <Pin className="h-2.5 w-2.5 text-blue-500 fill-blue-500 shrink-0" />
+                      )}
+                    </div>
+                    <h4 className="text-slate-800 font-bold text-xs truncate group-hover/shortcut:text-blue-600 transition-colors" title={snippet.title}>
+                      {highlightMatch(snippet.title, searchTerm)}
+                    </h4>
+                  </div>
+
+                  <div className="mt-2.5 flex items-center justify-between text-[10px] border-t border-slate-100 pt-1.5 font-mono">
+                    {/* Copy metrics tag */}
+                    {snippet.copyCount ? (
+                      <span className="bg-amber-50 text-amber-700 border border-amber-150/60 font-mono font-bold px-1 rounded-sm text-[9px]" title={`已复制 ${snippet.copyCount} 次`}>
+                        📋 {snippet.copyCount}x
+                      </span>
+                    ) : (
+                      <span className="text-slate-400 font-mono text-[9px]">置顶常驻</span>
+                    )}
+
+                    <div className="text-slate-350 group-hover/shortcut:text-blue-500 transition-colors">
+                      {snippet.isPassword ? (
+                        <Lock className="h-3 w-3 text-blue-500 shrink-0" />
+                      ) : (
+                        <Copy className="h-3 w-3 shrink-0" />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
         {/* Grafana-style Category Groups and grid panel */}
-        <section id="categories-sandbox" className="flex flex-col gap-5">
+        <section id="categories-sandbox" className="flex flex-col gap-3">
           {filteredCategories.length === 0 ? (
             <div className="py-20 text-center border-2 border-dashed border-slate-200 bg-white rounded-xl flex flex-col items-center justify-center gap-3 shadow-xs">
               <Layers className="h-10 w-10 text-slate-300 animate-pulse" />
@@ -1181,7 +1390,6 @@ export default function App() {
                     : 'border-slate-200 bg-white'
                 } shadow-xs hover:shadow-sm`}
               >
-                {/* Grafana Row Header */}
                 <div
                   id={`cat-header-${group.id}`}
                   className="bg-slate-50/95 hover:bg-slate-100/90 border-b border-slate-200 flex items-center justify-between px-4 py-2.5 group/header select-none"
@@ -1192,7 +1400,7 @@ export default function App() {
                       draggable
                       onDragStart={(e) => handleCategoryDragStart(e, groupIdx)}
                       onDragEnd={() => { setDraggedCategoryIdx(null); setDragOverCategoryIdx(null); }}
-                      className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-650 p-1 rounded"
+                      className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-655 p-1 rounded hover:bg-slate-200"
                       title="点击并拖拽调整分类排序"
                     >
                       <Move className="h-4 w-4" />
@@ -1201,7 +1409,7 @@ export default function App() {
                     {/* Expand Toggle Trigger Click area */}
                     <button
                       onClick={() => toggleCategory(groupIdx)}
-                      className="flex items-center gap-2 text-left flex-1 min-w-0"
+                      className="flex items-center gap-2 text-left flex-1 min-w-0 pointer-events-auto cursor-pointer"
                     >
                       <span className="text-slate-500">
                         {group.isOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
@@ -1239,7 +1447,7 @@ export default function App() {
 
                     <button
                       onClick={() => handleDeleteCategory(groupIdx, group.name, group.totalCount)}
-                      className="text-slate-500 hover:text-rose-600 p-1 hover:bg-slate-205/60 rounded transition-colors"
+                      className="text-slate-500 hover:text-rose-600 p-1 hover:bg-slate-200/60 rounded transition-colors"
                       title="删除该分类及其所有子内容"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -1289,13 +1497,32 @@ export default function App() {
                               {/* Card Header Info */}
                               <div className="space-y-1.5 flex-1 w-full min-w-0">
                                 <div className="flex items-start justify-between gap-1 w-full">
-                                  <h4 className="text-slate-800 font-bold text-sm leading-snug truncate pr-6 group-hover/card:text-blue-600 transition-colors" title={snippet.title}>
+                                  <h4 className="text-slate-800 font-bold text-sm leading-snug truncate pr-12 group-hover/card:text-blue-600 transition-colors" title={snippet.title}>
                                     {highlightMatch(snippet.title, searchTerm)}
                                   </h4>
 
-                                  <div className="absolute right-3.5 top-3 flex items-center gap-1">
+                                  <div className="absolute right-3.5 top-3 flex items-center gap-1.5 z-10">
+                                    {snippet.isPinned && (
+                                      <Pin className="h-3 w-3 text-blue-500 fill-blue-500 shrink-0" title="已固定顶置" />
+                                    )}
+
                                     {/* Action items container */}
-                                    <div className="opacity-0 group-hover/card:opacity-100 bg-white/95 border border-slate-100 shadow-sm pl-1 py-0.5 rounded flex items-center gap-0.5 transition-all duration-150 relative z-10">
+                                    <div className="opacity-0 group-hover/card:opacity-100 bg-white/95 border border-slate-150 shadow-xs px-1 py-0.5 rounded flex items-center gap-0.5 transition-all duration-150 relative">
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleTogglePin(snippet.id);
+                                        }}
+                                        className={`p-1 rounded transition-colors ${
+                                          snippet.isPinned 
+                                            ? 'text-blue-600 hover:text-blue-700 bg-blue-50' 
+                                            : 'text-slate-400 hover:text-slate-700 hover:bg-slate-50'
+                                        }`}
+                                        title={snippet.isPinned ? "取消置顶" : "置顶常驻"}
+                                      >
+                                        <Pin className="h-3.5 w-3.5" />
+                                      </button>
+                                      <span className="w-[1px] h-3 bg-slate-200"></span>
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation(); // Block main copy copy action
